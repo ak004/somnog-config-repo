@@ -10,6 +10,8 @@ services:
       POSTGRES_DB: ${POSTGRES_DB:-somnog_ems}
     volumes:
       - postgres_data:/var/lib/postgresql/data
+      # Only ever read on a fresh volume - see init/01-schemas.sql.
+      - ./init:/docker-entrypoint-initdb.d:ro
     healthcheck:
       test: ['CMD-SHELL', 'pg_isready -U ${POSTGRES_USER:-somnog}']
       interval: 5s
@@ -42,7 +44,22 @@ services:
     image: mailhog/mailhog:latest
     restart: unless-stopped
     ports:
-      - '8025:8025' # web inbox
+      # localhost only: the inbox has no authentication of any kind. Reach it
+      # with `ssh -L 8025:localhost:8025 <server>`.
+      - '127.0.0.1:8025:8025'
+
+  # --- one-shot: schema first, then the services ---------------------------
+  # Runs to completion on every `up -d`, before anything connects. Applies each
+  # service's prisma migrations and, when SEED_DEMO_DATA=true, the demo data.
+  # Both are idempotent. Built from the backend repo (docker/Dockerfile.migrate)
+  # and tagged with the same sha as the services, so the schema always matches
+  # the code being deployed.
+  migrate:
+    image: ghcr.io/ak004/somnog-ems-migrate:${BACKEND_IMAGE_TAG:-latest}
+    restart: 'no'
+    env_file: .env
+    depends_on:
+      postgres: { condition: service_healthy }
 
   # --- backend: somnog-sd-backend, tag bumped in images.env by its CI -------
   gateway:
@@ -50,10 +67,14 @@ services:
     restart: unless-stopped
     env_file: .env
     ports:
-      - '3000:3000'
+      # localhost only: public traffic arrives through nginx, which is what
+      # terminates the domain and adds the X-Forwarded-* headers the gateway
+      # rate-limits on. Handy for `curl localhost:3000/api/health` on the box.
+      - '127.0.0.1:3000:3000'
     depends_on:
       postgres: { condition: service_healthy }
       rabbitmq: { condition: service_healthy }
+      migrate: { condition: service_completed_successfully }
 
   auth-service:
     image: ghcr.io/ak004/somnog-ems-auth-service:${BACKEND_IMAGE_TAG:-latest}
@@ -62,6 +83,7 @@ services:
     depends_on:
       postgres: { condition: service_healthy }
       rabbitmq: { condition: service_healthy }
+      migrate: { condition: service_completed_successfully }
 
   events-service:
     image: ghcr.io/ak004/somnog-ems-events-service:${BACKEND_IMAGE_TAG:-latest}
@@ -70,6 +92,7 @@ services:
     depends_on:
       postgres: { condition: service_healthy }
       rabbitmq: { condition: service_healthy }
+      migrate: { condition: service_completed_successfully }
 
   notification-service:
     image: ghcr.io/ak004/somnog-ems-notification-service:${BACKEND_IMAGE_TAG:-latest}
@@ -79,18 +102,39 @@ services:
       postgres: { condition: service_healthy }
       rabbitmq: { condition: service_healthy }
       redis: { condition: service_healthy }
+      migrate: { condition: service_completed_successfully }
 
   # --- frontend: somnog-ems-frontend, tag bumped in images.env by its CI ---
   # No env_file: the only thing it reads is NEXT_PUBLIC_API_URL, baked into
   # the JS bundle at build time (a repo Variable on that repo's CI, not a
-  # runtime setting) - changing it here would do nothing.
+  # runtime setting) - changing it here would do nothing. With nginx in front
+  # it should be left empty there, so the browser calls /api on this same
+  # origin and the frontend never has to know the domain.
   frontend:
     image: ghcr.io/ak004/somnog-ems-frontend:${FRONTEND_IMAGE_TAG:-latest}
     restart: unless-stopped
     ports:
-      - '4200:3000'
+      - '127.0.0.1:4200:3000'
+
+  # --- the only thing on a public port -------------------------------------
+  nginx:
+    image: nginx:1.27-alpine
+    restart: unless-stopped
+    ports:
+      - '80:80'
+      # - '443:443'   # uncomment once a certificate exists - see README
+    volumes:
+      - ./nginx/conf.d:/etc/nginx/conf.d:ro
+      - ./nginx/proxy-common.conf:/etc/nginx/proxy-common.conf:ro
+      - certbot_www:/var/www/certbot
+      - certbot_conf:/etc/letsencrypt
+    depends_on:
+      - gateway
+      - frontend
 
 volumes:
   postgres_data:
   rabbitmq_data:
   redis_data:
+  certbot_www:
+  certbot_conf:
