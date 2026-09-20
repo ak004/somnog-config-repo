@@ -1,0 +1,94 @@
+name: somnog
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-somnog}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-somnog}
+      POSTGRES_DB: ${POSTGRES_DB:-somnog_ems}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U ${POSTGRES_USER:-somnog}']
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  rabbitmq:
+    image: rabbitmq:3-management-alpine
+    restart: unless-stopped
+    volumes:
+      - rabbitmq_data:/var/lib/rabbitmq
+    healthcheck:
+      test: ['CMD', 'rabbitmq-diagnostics', '-q', 'ping']
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ['CMD', 'redis-cli', 'ping']
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  mailhog:
+    image: mailhog/mailhog:latest
+    restart: unless-stopped
+    ports:
+      - '8025:8025' # web inbox
+
+  # --- backend: somnog-sd-backend, tag bumped in images.env by its CI -------
+  gateway:
+    image: ghcr.io/ak004/somnog-ems-gateway:${BACKEND_IMAGE_TAG:-latest}
+    restart: unless-stopped
+    env_file: .env
+    ports:
+      - '3000:3000'
+    depends_on:
+      postgres: { condition: service_healthy }
+      rabbitmq: { condition: service_healthy }
+
+  auth-service:
+    image: ghcr.io/ak004/somnog-ems-auth-service:${BACKEND_IMAGE_TAG:-latest}
+    restart: unless-stopped
+    env_file: .env
+    depends_on:
+      postgres: { condition: service_healthy }
+      rabbitmq: { condition: service_healthy }
+
+  events-service:
+    image: ghcr.io/ak004/somnog-ems-events-service:${BACKEND_IMAGE_TAG:-latest}
+    restart: unless-stopped
+    env_file: .env
+    depends_on:
+      postgres: { condition: service_healthy }
+      rabbitmq: { condition: service_healthy }
+
+  notification-service:
+    image: ghcr.io/ak004/somnog-ems-notification-service:${BACKEND_IMAGE_TAG:-latest}
+    restart: unless-stopped
+    env_file: .env
+    depends_on:
+      postgres: { condition: service_healthy }
+      rabbitmq: { condition: service_healthy }
+      redis: { condition: service_healthy }
+
+  # --- frontend: added once the somnog Next.js repo gets its own CI --------
+  # frontend:
+  #   image: ghcr.io/ak004/somnog-frontend:${FRONTEND_IMAGE_TAG:-latest}
+  #   restart: unless-stopped
+  #   env_file: .env
+  #   ports:
+  #     - '4200:3000'
+
+volumes:
+  postgres_data:
+  rabbitmq_data:
+  redis_data:
