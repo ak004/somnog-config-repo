@@ -80,13 +80,15 @@ services:
       rabbitmq: { condition: service_healthy }
       redis: { condition: service_healthy }
 
-  # --- frontend: added once the somnog Next.js repo gets its own CI --------
-  # frontend:
-  #   image: ghcr.io/ak004/somnog-frontend:${FRONTEND_IMAGE_TAG:-latest}
-  #   restart: unless-stopped
-  #   env_file: .env
-  #   ports:
-  #     - '4200:3000'
+  # --- frontend: somnog-ems-frontend, tag bumped in images.env by its CI ---
+  # No env_file: the only thing it reads is NEXT_PUBLIC_API_URL, baked into
+  # the JS bundle at build time (a repo Variable on that repo's CI, not a
+  # runtime setting) - changing it here would do nothing.
+  frontend:
+    image: ghcr.io/ak004/somnog-ems-frontend:${FRONTEND_IMAGE_TAG:-latest}
+    restart: unless-stopped
+    ports:
+      - '4200:3000'
 
 volumes:
   postgres_data:
